@@ -9,6 +9,7 @@ from torch.nn import functional as F
 
 from .base import ConfigurationError, Readout
 
+from neuralpredictors.layers.cores.conv2d import Stacked2dCore
 
 class Gaussian2d(Readout):
     """
@@ -277,6 +278,11 @@ class FullGaussian2d(Readout):
         feature_reg_weight=None,
         gamma_readout=None,  # depricated, use feature_reg_weight instead
         return_weighted_features=False,
+        zig = False,
+        batch_size = None,
+        kernel_size = None,
+        out_channels = 1,
+        conv_out = None, #dict containing parameters of 3dconv on top of Gaussian readout
         **kwargs,
     ) -> None:
         super().__init__()
@@ -324,6 +330,7 @@ class FullGaussian2d(Readout):
         self.init_sigma = init_sigma
         self.sigma = Parameter(torch.Tensor(*self.sigma_shape))  # standard deviation for gaussian for each neuron
 
+        self.out_channels = out_channels
         self.initialize_features(**(shared_features or {}))
 
         if bias:
@@ -336,6 +343,67 @@ class FullGaussian2d(Readout):
         self.align_corners = align_corners
         self.initialize(mean_activity)
         self.return_weighted_features = return_weighted_features
+
+        self.conv = nn.Conv2d(in_channels=1,
+                              out_channels=out_channels,
+                              kernel_size=kernel_size,
+                              padding=(kernel_size[0] // 2, kernel_size[1] // 2))
+        if conv_out:
+            '''
+            self.conv = Factorized3dCore(input_channels = 1, 
+                                        hidden_channels = conv_out["hidden_channels"],
+                                        spatial_input_kernel = conv_out["spatial_input_kernel"],
+                                        temporal_input_kernel = conv_out["temporal_input_kernel"],
+                                        spatial_hidden_kernel = conv_out["spatial_hidden_kernel"],
+                                        temporal_hidden_kernel = conv_out["temporal_hidden_kernel"],
+                                        final_nonlin = True ,
+                                        layers = len(conv_out["hidden_channels"]),
+                                        padding = True,
+                                        momentum = 0.7 )
+            This is computationally really expensive since we applie CNN along neuron dimension, which is between 7000-8000 large
+            '''
+            # Calculate hidden_pad
+            hidden_pad = [(x[0] // 2, x[1] // 2) for x in conv_out["hidden_kernel"]]
+
+            # Create and stack the layers
+            layers = []
+            in_channels = 1
+            input_padding = conv_out["input_kernel"] // 2
+            layers.append(
+                nn.Conv2d(
+                    in_channels=in_channels,
+                    out_channels=conv_out["hidden_channels"][0],
+                    kernel_size=conv_out["input_kernel"],
+                    padding=input_padding
+                )
+            )
+            layers.append(nn.BatchNorm2d(conv_out["hidden_channels"][0]))
+            layers.append(nn.ELU())
+            in_channels = conv_out["hidden_channels"][0]
+
+            # Hidden layers
+            for i in range(len(conv_out["hidden_channels"])):
+                layers.append(
+                    nn.Conv2d(
+                        in_channels=conv_out["hidden_channels"][i-1] if i>0 else in_channels,
+                        out_channels=conv_out["hidden_channels"][i],
+                        kernel_size=conv_out["hidden_kernel"][i],
+                        padding=hidden_pad[i]
+                    )
+                )
+                layers.append(nn.BatchNorm2d(conv_out["hidden_channels"][i]))
+                if i < len(conv_out["hidden_channels"])-1:
+                    layers.append(nn.ELU())
+                in_channels = conv_out["hidden_channels"][i]
+
+            # Create a sequential model
+            self.conv  = nn.Sequential(*layers)
+
+        self.zig = zig
+        if zig:
+            self.zig = zig
+            self.batch_size = batch_size
+            self.kernel_size = kernel_size
 
     @property
     def shared_features(self):
@@ -493,7 +561,7 @@ class FullGaussian2d(Readout):
                 self._original_features = False
             else:
                 self._features = Parameter(
-                    torch.Tensor(1, c, 1, n_match_ids)
+                    torch.Tensor(1, c, self.out_channels, n_match_ids)
                 )  # feature weights for each channel of the core
             self.scales = Parameter(torch.Tensor(1, 1, 1, self.outdims))  # feature weights for each channel of the core
             _, sharing_idx = np.unique(match_ids, return_inverse=True)
@@ -501,7 +569,7 @@ class FullGaussian2d(Readout):
             self._shared_features = True
         else:
             self._features = Parameter(
-                torch.Tensor(1, c, 1, self.outdims)
+                torch.Tensor(1, c, self.out_channels, self.outdims)
             )  # feature weights for each channel of the core
             self._shared_features = False
 
@@ -529,7 +597,7 @@ class FullGaussian2d(Readout):
         self.register_buffer("grid_sharing_index", torch.from_numpy(sharing_idx))
         self._shared_grid = True
 
-    def forward(self, x: torch.Tensor, sample=None, shift=None, out_idx=None, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, sample=None, shift=None, out_idx=None,batch_size = None, time_points = None, **kwargs) -> torch.Tensor:
         """
         Propagates the input forwards through the readout
         Args:
@@ -549,7 +617,7 @@ class FullGaussian2d(Readout):
         c_in, h_in, w_in = self.in_shape
         if (c_in, h_in, w_in) != (c, h, w):
             warnings.warn("the specified feature map dimension is not the readout's expected input dimension")
-        feat = self.features.view(1, c, self.outdims)
+        feat = self.features.view(self.out_channels, c, self.outdims)
         bias = self.bias
         outdims = self.outdims
 
@@ -574,8 +642,45 @@ class FullGaussian2d(Readout):
             grid = grid + shift[:, None, None, :]
 
         y = F.grid_sample(x, grid, align_corners=self.align_corners)
-        y = (y.squeeze(-1) * feat).sum(1).view(bs, outdims)
+        if self.zig:
+            # apply convolution to get multiple channel outputs, each channel corresponds to one parameter of the ZIG distribution.
+            #The parameters are modelled for each neuron and for each timestep, thus if we fix a channel, the tensor has shape (time*batch,num_neurons)
+            # y shape is [batch_size*time, depth, num_neurons, 1]
+            batch_time,depth,num_neurons,_ = y.shape
+            
+            
+            y = y.reshape(batch_size,time_points,depth,num_neurons,1)
+            # Reshape to [batch_size * num_neurons, 1, time, depth], so that batches don't get convoluted 
+            y = y.permute(0,3,1,2,4).reshape(batch_size*num_neurons,1,time_points,depth)
 
+            #y = y.permute(0,4,1,2,3) # for 3dconv
+            y = self.conv(y)
+            # Reshape back to [batch_size * time, depth, num_neurons,out_channels]
+            y = y.reshape(batch_size, num_neurons, self.out_channels,time_points, -1)
+
+            '''
+            #sum the first half of channels for q and the other halffor theta of ZIG distr
+            half = y.shape[1]
+            summed_tensor_1 = y[:, :half, :, :, :].sum(dim=1, keepdim=True) #new conv
+            summed_tensor_2 = y[:, half:, :, :, :].sum(dim=1, keepdim=True) #new conv
+            y = torch.cat((summed_tensor_1, summed_tensor_2), dim=1) #new conv
+            y = y.permute(0, 2, 3, 4, 1)
+            y = y.reshape(-1,y.shape[2],y.shape[3],y.shape[4]) #new conv
+            '''
+            
+            y = y.permute(0, 3, 4, 1,2)
+            y = y.reshape(-1,y.shape[2],y.shape[3],y.shape[4])
+            
+            #duplicate y, the position vector of the neuron is the same for the parameters q and theta
+            #only the feature vector differs the two parameters
+            #y = torch.cat([y, y], dim=3)
+            #add one dimension to feature vector
+            
+            feat = feat.reshape(1,depth,num_neurons,self.out_channels)
+
+            y = (y.squeeze(-1) * feat).sum(1).permute(2,0,1)
+        else: 
+            y = (y.squeeze(-1) * feat).sum(1).view(bs, outdims)
         if self.bias is not None:
             y = y + bias
         return y

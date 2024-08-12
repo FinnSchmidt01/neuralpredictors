@@ -361,6 +361,7 @@ class Factorized3dCore(Core3d, nn.Module):
             kernel_size=(temporal_input_kernel, 1, 1),
             bias=self.bias,
             dilation=(self.temporal_dilation, 1, 1),
+            padding=(self.temporal_input_kernel // 2, 0, 0) if self.padding else 0
         )
 
         self.add_bn_layer(
@@ -395,6 +396,7 @@ class Factorized3dCore(Core3d, nn.Module):
                 kernel_size=(self.temporal_hidden_kernel[l], 1, 1),
                 bias=self.bias,
                 dilation=(self.hidden_temporal_dilation[l], 1, 1),
+                padding=(self.temporal_hidden_kernel[l] // 2, 0, 0) if self.padding else 0
             )
 
             self.add_bn_layer(layer=layer, layer_idx=l + 1)

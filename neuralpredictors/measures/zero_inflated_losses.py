@@ -94,7 +94,8 @@ class ZIGLoss(ZeroInflationLossBase):
         theta, k = slab_params
         logdet = 0
         slab_logl = (
-            torch.log(q)
+              torch.log((1-q)*zero_mask+1*nonzero_mask)
+            + torch.log(q*nonzero_mask+1.0*zero_mask)
             + (k - 1) * torch.log(target * nonzero_mask - loc * nonzero_mask + 1.0 * zero_mask)
             - (target * nonzero_mask - loc * nonzero_mask) / theta
             - k * torch.log(theta)
