@@ -31,54 +31,67 @@ class PositionalEncoding(nn.Module):
         return x + self.encoding[:x.size(0), :]
 
 class Response_Encoder(nn.Module):
-    def __init__(self,input_dim, hidden_dim,mice_dim,hidden_gru, output_dim,n_neurons,n_hidden_layers=3, **kwargs):
+    def __init__(self,input_dim, hidden_dim,mice_dim,hidden_gru, output_dim,n_neurons,n_hidden_layers=3,norm="batch",non_linearity = True, **kwargs):
         super().__init__()
 
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.mice_dim = mice_dim
-        #self.linear = OrderedDict((datakey,nn.Linear(n_neurons[datakey], hidden_dim)) for datakey in n_neurons)
-        
-        self.linear = nn.Linear(input_dim,hidden_dim-mice_dim)
-        self.elu = nn.ELU()
-        self.batch_norm = nn.BatchNorm1d(hidden_dim-mice_dim)
+        self.linear = nn.ModuleDict((datakey,nn.Linear(n_neurons[datakey], hidden_dim-mice_dim)) for datakey in n_neurons)
+        #self.linear1 = nn.ParameterDict((datakey,nn.Parameter(torch.rand(n_neurons[datakey]))) for datakey in n_neurons)
+        #self.linear2= nn.ParameterDict((datakey,nn.Parameter(torch.rand(hidden_dim))) for datakey in n_neurons)
+        #self.bias = nn.ParameterDict((datakey,nn.Parameter(torch.rand(hidden_dim))) for datakey in n_neurons)
+        #self.linear = nn.Linear(input_dim,hidden_dim-mice_dim)
+        if non_linearity:
+            self.elu = nn.ELU()
+        else:
+            self.elu = None
+        if norm == "batch":
+            self.norm = nn.BatchNorm1d(hidden_dim-mice_dim)
+        elif norm == "layer":
+            self.norm = nn.LayerNorm([hidden_dim-mice_dim,80])
+        else:
+            self.norm = None
         self.GRU = nn.GRU(hidden_dim,hidden_gru,num_layers=n_hidden_layers, dropout=0.1, batch_first=True)
         self.final_linear = nn.Linear(hidden_gru,output_dim)
-        self.sigma = None
 
     def forward(self, x, datakey, mice):
         #reshape input
         B, n_neurons, in_features = x.size()
         x_reshaped = x.permute(0, 2, 1)#.reshape(-1, n_neurons)
         
-        if n_neurons < self.input_dim:
-            padding_size = self.input_dim - n_neurons
+        #if n_neurons < self.input_dim:
+            #padding_size = self.input_dim - n_neurons
             # Apply padding on the last dimension
-            pad_layer = nn.ConstantPad3d((0, 0, 0, padding_size, 0, 0), 0)  # (padding_left, padding_right)
-            x = pad_layer(x)
+            #pad_layer = nn.ConstantPad3d((0, 0, 0, padding_size, 0, 0), 0)  # (padding_left, padding_right)
+            #x = pad_layer(x)
         
         # Apply the MLP, each Mouse has individual linear layer
+        #v = self.linear1[datakey].view(-1, 1)  # Reshape v to (output_features, 1)
+        # Compute the outer product of w and v
+        #W = torch.matmul(self.linear2[datakey].view(-1, 1), v.T)  # Resulting shape (output_features, input_features)
+        #W = W.unsqueeze(0)
+        # Expand W to match the batch and time dimensions of x
+        # x is (B, T, neurons), W needs to be (B, T, hidden, neurons)
+        #W_expanded = W.expand(x.size(0), x.size(2), self.hidden_dim, n_neurons)
+        #x = torch.einsum('btij,bjt->bti', W_expanded, x).permute(0,2,1) +self.bias[datakey].unsqueeze(0).unsqueeze(2)
         #self.linear[datakey] = self.linear[datakey].to(x.device)
-
-        x = self.linear(x.permute(0,2,1)).permute(0,2,1) #after permutation (B,hidden,time)
-        x = self.batch_norm(x)
-        x = self.elu(x).permute(0,2,1) #after permutiation (B,time,hidden) this form is needed for GRU input
-
+        
+        x = self.linear[datakey](x.permute(0,2,1)).permute(0,2,1) #after permutation (B,hidden,time)
+        #x = self.batch_norm(x)
+        if self.norm: 
+            x = self.norm(x)
+        if self.elu:
+            x = self.elu(x).permute(0,2,1) #after permutiation (B,time,hidden) this form is needed for GRU input
+        else:
+            x = x.permute(0,2,1)
         mice_expanded = mice.unsqueeze(0).repeat(B, 1, 1) #expand it from (time,hidden) to (batch,time,hidden)
         x = torch.cat((x,mice_expanded), dim=2)
 
         x = self.GRU(x)[0]
         x = self.final_linear(x)
-        # create covariance matrix for multivariate gaussian, the covariance is the identity multiplied with sigma°2
-        #cov = (self.sigma ** 2) * torch.eye(gru_output.size(-1), device=x.device)
-        #normal_dist = dist.MultivariateNormal(x, covariance_matrix=cov)
-        # Sample from the distribution
-        # Use rsample() to utilize reparameterization for backpropagation through stochastic nodes
-        #samples = normal_dist.rsample()
-        if self.sigma is None:
-            #self.sigma = nn.Parameter(torch.ones(x.shape[0],x.shape[1])) #for each batch, timestep create one variance value
-            self.sigma = nn.Parameter(torch.ones(1,1)) #use one scale parameter for variance
-        return x #, self.sigma ** 2
+
+        return x 
 
 class Transformer_Encoder(nn.Module):
     def __init__(self,input_dim, hidden_dim,att_heads,n_neurons, n_hidden_layers=3,max_len = 80, **kwargs):
@@ -262,6 +275,8 @@ class ZIGEncoder(ZeroInflationEncoderBase):
         latent = False,
         encoder = None,
         decoder = None,
+        norm_layer = "batch",
+        non_linearity = True
     ):
     #out_predicts: if True outputs mean predictions, otherwise outputs parameters of ZIG distribution
     # moment_matching is a dict that contains mean and variances numpy arrays of all neurons, the keys are the mice
@@ -271,6 +286,8 @@ class ZIGEncoder(ZeroInflationEncoderBase):
     # if false it predicts the mean of the mixture (the ZIG) distribution
     #latent is bool decides if latent sapce is added or not to model
     #encoder/decoder is a dict containing inforamtion about Encoder/Decoder for latent space
+    # if norma_layer = "batch" the Encoder will use batch normailzation at beginning otherwise it uses layernorm
+    # non_linearity: if True nonlinearity is applied after linear layer and normalization at beginning of Encoder
         super().__init__(
             core, readout, zero_thresholds, loc_image_dependent, q_image_dependent, offset, shifter, modulator
         )
@@ -306,7 +323,7 @@ class ZIGEncoder(ZeroInflationEncoderBase):
 
             else:
                 self.encoder = Response_Encoder(encoder["input_dim"],encoder["hidden_dim"],encoder["mice_dim"],encoder["hidden_gru"],encoder["output_dim"],
-                                                n_neurons,n_hidden_layers=encoder["hidden_layers"])
+                                                n_neurons,n_hidden_layers=encoder["hidden_layers"],norm=norm_layer, non_linearity = non_linearity)
                 self.samples = encoder["n_samples"]
                 if decoder:
                     self.decoder = nn.GRU(encoder["output_dim"],decoder["hidden_dim"],num_layers=decoder["hidden_layers"], dropout=0.1, batch_first=True)
