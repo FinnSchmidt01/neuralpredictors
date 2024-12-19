@@ -655,6 +655,7 @@ class FullGaussian2d(Readout):
 
             #y = y.permute(0,4,1,2,3) # for 3dconv
             y = self.conv(y)
+            #y = torch.cat([y, y], dim=1)
             # Reshape back to [batch_size * time, depth, num_neurons,out_channels]
             y = y.reshape(batch_size, num_neurons, self.out_channels,time_points, -1)
 
