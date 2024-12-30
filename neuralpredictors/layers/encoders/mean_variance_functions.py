@@ -2,13 +2,13 @@ import numpy as np
 import torch
 
 
-def fitted_zig_mean(theta, k, loc, q, approximate=False, no_mixture_mean = False):
+def fitted_zig_mean(theta, k, loc, q, approximate=False, no_mixture_mean=False):
     uniform_mean = 0
     if not approximate:
         uniform_mean += (1 - q) * 0.5 * loc
     gamma_mean = q * (k * theta + loc)
     if no_mixture_mean:
-        #return mean of the component of the mixture distribution (either gamma or unfiform mean), not the mean of the mixture
+        # return mean of the component of the mixture distribution (either gamma or unfiform mean), not the mean of the mixture
         return torch.where(q < 0.5, uniform_mean, k * theta + loc)
     else:
         return uniform_mean + gamma_mean

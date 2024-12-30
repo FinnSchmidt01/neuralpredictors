@@ -1,7 +1,11 @@
 import torch
 import torch.nn as nn
-from torch.distributions import Normal, StudentT
-from torch.distributions import Normal, LowRankMultivariateNormal, MultivariateNormal
+from torch.distributions import (
+    LowRankMultivariateNormal,
+    MultivariateNormal,
+    Normal,
+    StudentT,
+)
 
 
 class ZeroInflationLossBase(nn.Module):
@@ -95,8 +99,8 @@ class ZIGLoss(ZeroInflationLossBase):
         theta, k = slab_params
         logdet = 0
         slab_logl = (
-              torch.log((1-q)*zero_mask+1*nonzero_mask) #- torch.log(loc*zero_mask+1*nonzero_mask)
-            + torch.log(q*nonzero_mask+1.0*zero_mask)
+            torch.log((1 - q) * zero_mask + 1 * nonzero_mask)  # - torch.log(loc*zero_mask+1*nonzero_mask)
+            + torch.log(q * nonzero_mask + 1.0 * zero_mask)
             + (k - 1) * torch.log(target * nonzero_mask - loc * nonzero_mask + 1.0 * zero_mask)
             - (target * nonzero_mask - loc * nonzero_mask) / theta
             - k * torch.log(theta)
@@ -139,13 +143,19 @@ class ZIFLoss(ZeroInflationLossBase):
         gaussian_masks = (targets >= rho).detach()  # slab
 
         # Compute spike log-likelihood
-        uniform_log_probs = torch.log(1 - qs) #- torch.log(rho)  # Shape: (Batch, Time, Neurons, Samples)
-        uniform_log_probs = (uniform_log_probs * uniform_masks)  # Shape: (Batch, Time, Neurons, Samples)
+        uniform_log_probs = torch.log(1 - qs)  # - torch.log(rho)  # Shape: (Batch, Time, Neurons, Samples)
+        uniform_log_probs = uniform_log_probs * uniform_masks  # Shape: (Batch, Time, Neurons, Samples)
 
         # Compute slab log-likelihood with flow transformation
-        transformed_targets, logdets = model.flow[data_key](targets.squeeze(-1), zero_mask=uniform_masks.squeeze(-1).int())  # Shape: (Batch, Time, Neurons)
+        transformed_targets, logdets = model.flow[data_key](
+            targets.squeeze(-1), zero_mask=uniform_masks.squeeze(-1).int()
+        )  # Shape: (Batch, Time, Neurons)
         # Extract the dimensions
-        batch_size, time_steps, neurons, = transformed_targets.shape
+        (
+            batch_size,
+            time_steps,
+            neurons,
+        ) = transformed_targets.shape
 
         # Compute the covariance matrix
         # Only using diagonal psi_diag, so the covariance is diagonal
@@ -155,7 +165,7 @@ class ZIFLoss(ZeroInflationLossBase):
         diff = transformed_targets.unsqueeze(-1) - means  # Shape: (Batch, Time, Neurons, Samples)
         # Compute the quadratic term in the Gaussian log-likelihood
         # term = diff^T * inv_covariance_matrix * diff, computed for each element
-        quadratic_term = torch.einsum('btis,i,btis->btis', diff, psi_inv, diff) 
+        quadratic_term = torch.einsum("btis,i,btis->btis", diff, psi_inv, diff)
 
         # Compute log determinant of the diagonal covariance matrix
         logdet_covariance = torch.log(psi_diag).unsqueeze(0).unsqueeze(0).unsqueeze(-1)
@@ -164,7 +174,9 @@ class ZIFLoss(ZeroInflationLossBase):
         gaussian_log_probs = -0.5 * (
             quadratic_term + torch.log(torch.tensor(2 * torch.pi)) + logdet_covariance
         )  # Shape: (Batch, Time,, Neurons Samples)
-        gaussian_log_probs = gaussian_log_probs + logdets.unsqueeze(-1) + torch.log(qs)  # Shape: (Batch, Time,, Neurons Samples)
+        gaussian_log_probs = (
+            gaussian_log_probs + logdets.unsqueeze(-1) + torch.log(qs)
+        )  # Shape: (Batch, Time,, Neurons Samples)
         gaussian_log_probs = gaussian_log_probs * gaussian_masks.int()
         # Combine spike and slab log-likelihoods
         loglikelihood = uniform_log_probs + gaussian_log_probs  # Scalar

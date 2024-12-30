@@ -228,9 +228,9 @@ class Stacked2dCore(ConvCore, nn.Module):
 
     def add_subsequent_conv_layer(self, layer: OrderedDict, l: int) -> None:
         layer[self.conv_layer_name] = self.ConvLayer(
-            in_channels=self.hidden_channels[l - 1]
-            if not self.skip > 1
-            else min(self.skip, l) * self.hidden_channels[0],
+            in_channels=(
+                self.hidden_channels[l - 1] if not self.skip > 1 else min(self.skip, l) * self.hidden_channels[0]
+            ),
             out_channels=self.hidden_channels[l],
             kernel_size=self.hidden_kern[l - 1],
             stride=self.stride,

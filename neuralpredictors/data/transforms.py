@@ -98,9 +98,11 @@ class Subsequence(MovieTransform):
             i = self.offset
         return x.__class__(
             **{
-                k: getattr(x, k)[:, i : i + self.frames, ...]
-                if k in self.channel_first
-                else getattr(x, k)[i : i + self.frames, ...]
+                k: (
+                    getattr(x, k)[:, i : i + self.frames, ...]
+                    if k in self.channel_first
+                    else getattr(x, k)[i : i + self.frames, ...]
+                )
                 for k in x._fields
             }
         )
@@ -289,9 +291,11 @@ class ToTensor(MovieTransform, StaticTransform, Invertible):
     def __call__(self, x):
         return x.__class__(
             *[
-                torch.from_numpy(elem.astype(np.float32))
-                if not self.cuda
-                else torch.from_numpy(elem.astype(np.float32)).cuda()
+                (
+                    torch.from_numpy(elem.astype(np.float32))
+                    if not self.cuda
+                    else torch.from_numpy(elem.astype(np.float32)).cuda()
+                )
                 for elem in x
             ]
         )
@@ -655,9 +659,11 @@ class CutVideos(MovieTransform):
         if self.idx is not None:
             return x.__class__(
                 **{
-                    k: np.take(getattr(x, k), self.idx, self.frame_axis[k])
-                    if k in self.target_groups
-                    else getattr(x, k)
+                    k: (
+                        np.take(getattr(x, k), self.idx, self.frame_axis[k])
+                        if k in self.target_groups
+                        else getattr(x, k)
+                    )
                     for k in x._fields
                 }
             )
