@@ -120,14 +120,8 @@ class FlowLayer(nn.Module):
 
         z, log_det1 = self.affine1(z)
 
-        # z_in_range = torch.logical_and(z >= -1000, z <= 1000)
-        # log_det_tanh = torch.where(
-        # z_in_range,
-        #    -2 * torch.log(torch.cosh(z)),  # Apply if z is in the range [-10, 10]
-        #    torch.abs(z) - torch.log(torch.tensor(2.0))  # Apply if z is not in the range
-        # ) # if z is large cosh(z) might explode, but log(cosh(z)) = x -log(2) for large z.
-        log_det_tanh = -2 * torch.log(torch.cosh(z / 100)) - torch.log(torch.tensor(100))
-        z = self.tanh(z / 100)
+        log_det_tanh = -2 * torch.log(torch.cosh(z))
+        z = self.tanh(z)
 
         z, log_det2 = self.affine2(z)
 
@@ -220,7 +214,7 @@ class FlowLayer(nn.Module):
     def invert_tanh(self, y):
         # Inverse of tanh transformation with clamping to ensure numerical stability
         # Clamp values to ensure they are in the valid range of arctanh
-        y = torch.clamp(y, min=-0.999, max=0.999)  # Clamp to avoid infinities and numerical issues
+        y = torch.clamp(y, min=-0.9999, max=0.9999)  # Clamp to avoid infinities and numerical issues
         return 0.5 * torch.log((1 + y) / (1 - y))
 
     def invert_elu(self, y):
@@ -819,14 +813,12 @@ class ZIGEncoder(ZeroInflationEncoderBase):
             else:
                 self.latent_feature = nn.ParameterDict(
                     {
-                        data_key + suffix: nn.Parameter(torch.randn(out_dim, ro.outdims))
+                        data_key + suffix: nn.Parameter(torch.zeros(out_dim, ro.outdims))
                         # data_key+suffix: nn.Parameter(torch.zeros(out_dim, 1))
                         for data_key, ro in self.readout.items()
                         for suffix in ["_q", "_theta"]
                     }
                 )  # means has shape (batch,time,hidden_dim)
-        else:  # if no latent
-            self.flow = False
 
         if not theta_image_dependent:
             self.logtheta = nn.ParameterDict(
@@ -1012,12 +1004,6 @@ class ZIGEncoder(ZeroInflationEncoderBase):
                     )  # this computes w_z*z and has shape (B*time,n_neurons,samples)
 
                 else:
-                    # theta_feature_norms = torch.norm(self.latent_feature[data_key+"_theta"], dim=0, keepdim=True)
-                    # self.latent_feature[data_key+"_theta"] = self.latent_feature[data_key+"_theta"] / theta_feature_norms
-
-                    # q_feature_norms = torch.norm(self.latent_feature[data_key+"_q"], dim=0, keepdim=True)
-                    # self.latent_feature[data_key+"_q"] = self.latent_feature[data_key+"_q"] / q_feature_norms
-
                     latent_repr_theta = torch.einsum(
                         "bhi,hj->bji", samples, self.latent_feature[data_key + "_theta"]
                     )  # this computes w_z*z and has shape (B*time,n_neurons,samples)
@@ -1078,12 +1064,6 @@ class ZIGEncoder(ZeroInflationEncoderBase):
                     )  # this computes w_z*z and has shape (B*time,n_neurons,samples)
 
                 else:
-                    # theta_feature_norms = torch.norm(self.latent_feature[data_key+"_theta"], dim=0, keepdim=True)
-                    # self.latent_feature[data_key+"_theta"] = self.latent_feature[data_key+"_theta"] / theta_feature_norms
-
-                    # q_feature_norms = torch.norm(self.latent_feature[data_key+"_q"], dim=0, keepdim=True)
-                    # self.latent_feature[data_key+"_q"] = self.latent_feature[data_key+"_q"] / q_feature_norms
-
                     latent_repr_theta = torch.einsum(
                         "bh,hj->bj", means, self.latent_feature[data_key + "_theta"]
                     )  # this computes w_z*z and has shape (B*time,n_neurons,samples)
@@ -1292,12 +1272,6 @@ class ZIGEncoder(ZeroInflationEncoderBase):
                         "bhi,hj->bji", samples, latent_feature_q
                     )  # this computes w_z*z and has shape (B*time,n_neurons,samples)
                 else:
-                    # theta_feature_norms = torch.norm(self.latent_feature[data_key+"_theta"], dim=0, keepdim=True)
-                    # self.latent_feature[data_key+"_theta"] = self.latent_feature[data_key+"_theta"] / theta_feature_norms
-
-                    # q_feature_norms = torch.norm(self.latent_feature[data_key+"_q"], dim=0, keepdim=True)
-                    # self.latent_feature[data_key+"_q"] = self.latent_feature[data_key+"_q"] / q_feature_norms
-
                     latent_repr_theta = torch.einsum(
                         "bhi,hj->bji", samples, self.latent_feature[data_key + "_theta"]
                     )  # this computes w_z*z and has shape (B*time,n_neurons,samples)
